@@ -23,7 +23,7 @@ segs = read.table(snakemake@input[["segmented"]], header = TRUE)
 # gamma = 1 for sequencing data
 #
 # Here we calculate sum of squared differences from integer values
-# We also penalise non-positive values (<0)
+# We also penalise non-positive values (<1)
 fit_lrr = function(lrrs, rho, psit, gamma = 1) {
   
   # Calculate average ploidy of all cells
