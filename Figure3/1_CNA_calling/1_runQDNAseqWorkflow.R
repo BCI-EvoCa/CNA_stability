@@ -4,7 +4,7 @@
 # 
 # Coded by George Cresswell
 
-# We requires these libraries
+# We require these libraries
 if (!require(QDNAseq)) stop("Package 'QDNAseq' missing\n.")
 if (!require(CGHcall)) stop("Package 'CGHcall' missing\n.")
 if (!require(ggplot2)) stop("Package 'ggplot2' missing\n.")
