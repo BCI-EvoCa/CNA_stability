@@ -1,0 +1,930 @@
+---
+title: "Diversity measures"
+author: "George Cresswell"
+date: "21/02/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = "center")
+```
+
+## Diversity measurements in the Longitudinal Metastasis Cohort
+
+### Libraries
+
+We use lmerTest to perform the linear mixed models. It allows us to test if there is a significant change whilst controlling for different patients.
+
+```{r libraries, echo = TRUE, warning=FALSE, message=FALSE}
+# Libraries
+library(ggplot2)
+library(cowplot)
+theme_set(theme_cowplot())
+library(lmerTest)
+library(plyr)
+library(reshape2)
+```
+
+### Settings for the script
+
+```{r settings, warning=FALSE}
+# Create a custom theme for plotting
+plot_theme = theme_bw(base_size = 18) + theme(panel.grid.major = element_blank(), 
+                                              panel.grid.minor = element_blank())
+
+# Wide plot
+wide_width = 33
+
+# Plot dir
+plot_dir = "./"
+```
+
+### Functions
+
+Here we define functions used to measure distance. Firstly, we define `diff_state_dist` which is our measure of divergence, the number genomic bins that are different between two samples divided by total number of bins are aberrant (!=2) in at least one sample.
+
+The second function `pga_diff_dist`, measures the difference in PGA (as percentage points).
+
+```{r functions, warning=FALSE}
+# Here we define the distance measure we will use
+diff_state_dist = function(x, y, only_alt_bins = T) {
+  
+  frac_genome_alt = length(which(x!=y)) / length(x)
+  
+  if(only_alt_bins) {
+    
+    bins_diff = length(which(x!=y))
+
+    c = cbind(x, y)
+
+    bins_ab = length(which(apply(c, 1, function(i) any(i!=2))))
+
+    output = bins_diff / bins_ab
+  
+  } else {output = frac_genome_alt}
+  
+  return(output)
+  
+}
+
+# Simple difference calculation
+pga_diff_dist = function(pre, post, abs = F, perc_not_frac = T) {
+  
+  # Calculate PGAs
+  pre_pga  = length(which(pre!=2)) / length(pre)
+  post_pga = length(which(post!=2)) / length(post)
+  
+  # Calculate increase in PGA
+  output = (post_pga - pre_pga)
+  
+  if(perc_not_frac) {output = output * 100}
+  
+  if(abs) {output = abs(output)}
+  
+  return(output)
+  
+}
+```
+
+### Preprocessing
+
+Here we process the clinical data and the CNA calls. We read in the clinical data and then the calls. We also then choose to saturate calls of losses and gain thus that 0 and 1 losses are all treated as a loss and that all gains (3, 4, 5 etc.) are treated as being simply 'gained'. This means that a change from CN 2 to 5 is treated as being identical to 2 to 1 and 3 to 1, for instance.
+
+```{r preprocessing, warning=FALSE, message=FALSE}
+# Read in clinical/genomic data
+clin_genomic = read.table("Table_S7_Fig3.LM_cohort_info_v2.csv", sep = ",",
+                          header = TRUE, stringsAsFactors = FALSE)
+
+# Simplify the organs
+clin_genomic$Organ[clin_genomic$Organ %in% c("Colon", "Rectum")] = "Colorectal"
+clin_genomic$Organ[grep("lymph", clin_genomic$Organ)] = "Lymph"
+clin_genomic$Organ[clin_genomic$Organ %in% c("Peritoneum", "Ovary", "Omentum")] = "Peritoneum"
+
+# Split out the sample name
+clin_genomic$Block  = unlist(lapply(strsplit(clin_genomic$Sample_Name, split = "-"), function(i) i[2]))
+clin_genomic$Region = unlist(lapply(strsplit(clin_genomic$Sample_Name, split = "-"), function(i) i[3]))
+
+# Read in call data
+calls_list = lapply(1:nrow(clin_genomic), function(i) {
+  
+  # Sample info
+  case   = clin_genomic[i,"Patient_ID"]
+  sample = clin_genomic[i,"Sample_Name"]
+  
+  # Read that file in
+  calls = read.table(paste0("cna_calls/",case,"_",
+                            sample,"_500kb_GRCh38_cna_calls.txt"),
+                     stringsAsFactors = F)
+  
+})
+
+# Saturate gains and losses
+calls_list = lapply(calls_list, function(m) {
+  
+  loss.ind = which(m[,1] <= 1)
+  
+  gain.ind = which(m[,1] >= 3)
+  
+  m[loss.ind,1] = 1
+  
+  m[gain.ind,1] = 3 
+  
+  return(m)
+
+})
+
+# Make them a matrix
+calls_mat = do.call(cbind, calls_list)
+```
+
+```{r mode_time_points, warning=FALSE}
+# Calculate number of timepoints assayed per patient
+number_of_timepoint = unlist(lapply(unique(clin_genomic$Patient_ID), function(p) length(unique(clin_genomic[clin_genomic$Patient_ID==p,"Time_point"]))))
+
+# Make a plot
+hist(number_of_timepoint, xlab = "Number of timepoints assayed", main = "LM cohort sampling")
+```
+
+### Calculate divergence
+
+We then calculate divergence for all comparisons of samples and record the organ, timepoint, type of sample (primary and metastasis) and block id for each.
+
+```{r read_call_data, warning=FALSE}
+# Run through patients
+patient_dists = lapply(unique(clin_genomic$Patient_ID), function(p) {
+
+  # Patient ids
+  pat_mat = calls_mat[,which(clin_genomic$Patient_ID==p)]
+  
+  # Corresponding clinical information
+  clin_mat = clin_genomic[which(clin_genomic$Patient_ID==p),]
+  
+  # Run nested apply to get all distances
+  col_col_dists = lapply(1:ncol(pat_mat), function(i) {
+    
+    # Get column
+    col_a = pat_mat[,i]
+    
+    # Get the organ and timepoint
+    organ_i = clin_mat[i,"Organ"]
+    timep_i = clin_mat[i,"Time_point"]
+    type_i  = clin_mat[i,"Organ_description"]
+    block_i = clin_mat[i,"Sample_Name"]
+    month_i = clin_mat[i,"Month"]
+    
+    # Nest the other comparisons
+    dists = lapply(1:ncol(pat_mat), function(j) {
+      
+      # Get column
+      col_b = pat_mat[,j]
+      
+      # Get the organ and timepoint
+      organ_j = clin_mat[j,"Organ"]
+      timep_j = clin_mat[j,"Time_point"]
+      type_j  = clin_mat[j,"Organ_description"]
+      block_j = clin_mat[j,"Sample_Name"]
+      month_j = clin_mat[j,"Month"]
+      
+      # Get distance
+      d = diff_state_dist(x = col_a, y = col_b)
+      p = pga_diff_dist(pre = col_a, post = col_b, abs = T, perc_not_frac = F)
+      
+      # Give NA if it is the same comparison or redundant
+      if(i<=j) {d = NA}
+      if(i<=j) {p = NA}
+      
+      # Make the output a dataframe
+      output = data.frame(dist = d,
+                          Organ_i = organ_i,
+                          Organ_j = organ_j,
+                          TP_i = timep_i,
+                          TP_j = timep_j,
+                          Type_i = type_i,
+                          Type_j = type_j,
+                          Code_i = block_i,
+                          Code_j = block_j,
+                          Month_i = month_i,
+                          Month_j = month_j,
+                          pdiff = p)
+      
+      return(output)
+      
+    })
+    
+    # Get those dists
+    return(dists)
+    
+  })
+  
+  # Dist mat
+  one_side_dist_mat = do.call(rbind, lapply(col_col_dists, function(i) do.call(rbind, i)))
+  
+  # One sided dist_mat for patient
+  return(one_side_dist_mat)
+  
+})
+
+# Name elements in the list
+names(patient_dists) = unique(clin_genomic$Patient_ID)
+
+# Also add it as a column
+for(i in 1:length(patient_dists)) {
+  
+  # Add list name as a column
+  patient_dists[[i]]$Patient = names(patient_dists)[i]
+  
+}
+
+# Remove NAs
+patient_dists = lapply(patient_dists, na.omit)
+
+# Make into one massive df
+cohort_dist_m = do.call(rbind, patient_dists)
+```
+
+### Mean single timepoint divergence
+
+Next, we calculate the *mean* divergence in each single time interval for each patient and we report the median value. This is provide a value for the general amount of divergence measured.
+
+```{r mean_divergence_cohort_tps, warning=FALSE}
+# Calculate average per patient and timepoint difference
+per_patient_tp_divergence = lapply(unique(cohort_dist_m$Patient), function(p) {
+  
+  # Take patient
+  pat_m =  cohort_dist_m[cohort_dist_m$Patient==p,]
+  
+  #Subset for single difference timepoints
+  pat_m = pat_m[abs(pat_m$TP_i - pat_m$TP_j) == 1,]
+  
+  # Make sure the timepoints are in order
+  TPs = apply(pat_m, 1, function(r) paste0(sort(c(r["TP_i"],r["TP_j"])), collapse = "_"))
+  
+  # What are these unique TPs?
+  diff_tps = unique(TPs)
+  
+  # Run through the tps
+  per_tp = lapply(diff_tps, function(t) {
+    
+    # Calculate mean
+    mean_div_cohort = mean(pat_m[TPs==t,"dist"])
+    
+  })
+  
+  unlist(per_tp)
+  
+})
+
+# Print some infomation to the user
+print(paste0("Median mean timepoint divergence: ",round(median(unlist(per_patient_tp_divergence)), digits = 3)))
+```
+
+### Within timepoint, same organ divergence
+
+Here we plot the divergences observed within each single timepoint, within a single organ, to represent divergence in space.
+
+```{r divergences_in_timepoint_in_organs, warning=FALSE, fig.width=33, fig.height=6}
+# Remove anything that isn't timepoint to timepoint comparison
+plot.df = cohort_dist_m[cohort_dist_m$Organ_i==cohort_dist_m$Organ_j & cohort_dist_m$TP_i==cohort_dist_m$TP_j,]
+
+# Remove ugly rownames
+rownames(plot.df) = NULL
+
+# Make factor
+plot.df$Timepoint = as.factor(plot.df$TP_i)
+
+# Extract the month
+plot.df$Month = as.factor(plot.df$Month_i)
+
+# Do ggplot2
+ggplot(plot.df, aes(x = Month, y = dist)) + geom_violin() + 
+  ylab("Divergence (fraction bins altered)") + xlab("Month") +
+  geom_jitter(width = 0.1, aes(col = Organ_i)) + ylim(-0.1,1) + #geom_hline(yintercept = 0.2) +
+  facet_grid(. ~ Patient, scales = "free_x") + plot_theme + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(col = "Organ")
+ggsave(filename = paste0(plot_dir,
+                         "Divergences_within_timepoints_within_organs.pdf"), 
+       width = wide_width, height = 6)
+
+# Same plot but for the PGA difference
+ggplot(plot.df, aes(x = Month, y = pdiff)) + geom_violin() + 
+  ylab("PGA difference") + xlab("Month") +
+  geom_jitter(width = 0.1, aes(col = Organ_i)) + ylim(-0.1,1) + #geom_hline(yintercept = 0.2) +
+  facet_grid(. ~ Patient, scales = "free_x") + plot_theme + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(col = "Organ")
+```
+
+### Same timepoint, difference organ divergence
+
+Here we plot the divergences observed within each single timepoint, but this time within different organs sampled at these timepoints, and this represents divergence in space between the samples across the body. There are very few examples of timepoints in which multiple organs were assessed. Generally in the cohort colorectal samples are sampled in the first timepoint and liver in latter timepoints.
+
+```{r between_organs_within_timepoints, warning=FALSE, fig.width=15, fig.height=6}
+# Plotting divergence in a timepoint between organs
+plot.df = do.call(rbind, lapply(patient_dists, function(p_data) {
+  
+  p_data[which(p_data$TP_i==p_data$TP_j & p_data$Organ_i!=p_data$Organ_j),]
+  
+}))
+
+# Remove ugly rownames
+rownames(plot.df) = NULL
+
+# Make factor
+plot.df$Timepoint = as.factor(plot.df$TP_i)
+
+# We need it as a factor
+plot.df$Month = as.factor(plot.df$Month_i)
+
+# Add on, for colours
+plot.df$Organ_combination = as.factor(apply(t(apply(plot.df, 1, function(r) sort(c(r[2], r[3])))), 1, 
+                                            function(i) paste0(i, collapse = "|")))
+
+# Do ggplot2
+ggplot(plot.df, aes(x = Month, y = dist)) + geom_violin() + 
+  ylab("Divergence (fraction bins altered)") + xlab("Month") +
+  geom_jitter(width = 0.1, aes(col = Organ_combination)) + ylim(-0.1,1) + 
+  facet_grid(. ~ Patient, scales = "free_x") + plot_theme + labs(col = "Organ Comparison")
+ggsave(filename = paste0(plot_dir,
+                         "Divergences_between_organs_within_timepoints.pdf"), 
+       width = 15, height = 6)
+
+# Same thing but for PGA difference
+ggplot(plot.df, aes(x = Month, y = pdiff)) + geom_violin() + 
+  ylab("PGA difference") + xlab("Month") +
+  geom_jitter(width = 0.1, aes(col = Organ_combination)) + ylim(-0.1,1) + 
+  facet_grid(. ~ Patient, scales = "free_x") + plot_theme + labs(col = "Organ Comparison")
+```
+
+### Within organ divergence, primary and metastasis
+
+Now we collapse this data and group the within timepoint, single organ divergences into primary and metastasis categories to investigate if metastatic deposits show a higher or lower level of within organ diversity than primary tumours. Here we can also see that we have much more data for liver metastases. 
+
+```{r make_df_within_prim_mets, warning=FALSE, fig.width = 8, fig.height = 6}
+# Get only the heterogeneities within primaries and mets
+within_prim_mets = cohort_dist_m[cohort_dist_m$TP_i==cohort_dist_m$TP_j & 
+                                 cohort_dist_m$Type_i==cohort_dist_m$Type_j & 
+                                 cohort_dist_m$Organ_i==cohort_dist_m$Organ_j,]
+
+# Reorder those levels
+within_prim_mets$Type_i = factor(within_prim_mets$Type_i, levels(within_prim_mets$Type_i)[2:1])
+```
+
+### Mixed model of within organ divergence, primary and metastasis
+
+Of course, to correctly investigate this we need to perform some statistics. Therefore here we create a mixed model (`lmer`) of `Divergence ~ Metastasis` where we use each patient as a random effect to control for the fact that patients may show different total levels of divergence.
+
+```{r mixed_model_primary_met, echo = FALSE, warning=FALSE}
+# Do mixed modelling
+res2b = lmer(dist ~ Type_i + (1 | Patient), 
+             REML = TRUE, data = within_prim_mets)
+print("Mixed model (1) - Primary and Metastasis using patients as random intercepts")
+summary(res2b)
+
+# P Values
+p_value_prim_met_diff = round(summary(res2b)$coefficients["Type_iMetastasis","Pr(>|t|)"], digits = 2)
+p_value_line_height = max(within_prim_mets$dist)*1.1
+
+# Plot divergences in Mets and Primary
+ggplot(within_prim_mets, aes(x = Type_i, y = dist)) + geom_boxplot() +
+  ylab("Divergence (fraction bins altered)") + xlab(NULL) +
+  geom_jitter(width = 0.2, aes(col = Patient, shape = Organ_i), size = 3) + ylim(-0.1,1) + plot_theme + 
+  theme(text = element_text(size = 20)) + 
+  geom_segment(aes(x = 1, y = p_value_line_height, xend = 2, yend = p_value_line_height)) +
+  geom_segment(aes(x = 1, y = p_value_line_height - 0.01, xend = 1, yend = p_value_line_height)) +
+  geom_segment(aes(x = 2, y = p_value_line_height - 0.01, xend = 2, yend = p_value_line_height)) +
+  annotate("text", label = paste0("p=",p_value_prim_met_diff), x = 1.5, y = p_value_line_height + 0.075, size = 5) +
+  scale_shape_manual(values=c(17, 19, 15, 18, 4)) +
+  labs(col = "Patient", shape = "Organ (Panel C)")
+ggsave(filename = paste0(plot_dir,
+                         "Divergences_within_organs_categorised_by_primary_metastatsis.png"), 
+       width = 7, height = 8.2)
+
+rownames(within_prim_mets) = NULL
+
+# Print mean divergence in the primary samples
+print(mean(within_prim_mets[within_prim_mets$Type_i=="Primary","dist"]))
+
+# Do mixed modelling
+res2b = lmer(pdiff ~ Type_i + (1 | Patient), 
+             REML = TRUE, data = within_prim_mets)
+print("Repeat of mixed model (1) but for PGA difference")
+summary(res2b)
+
+# P Values
+p_value_prim_met_diff = round(summary(res2b)$coefficients["Type_iMetastasis","Pr(>|t|)"], digits = 2)
+p_value_line_height = max(within_prim_mets$dist)*1.1
+
+# Plot PGA differences in Mets and Primary
+ggplot(within_prim_mets, aes(x = Type_i, y = pdiff)) + geom_violin() +
+  ylab("PGA difference") + xlab("") +
+  geom_jitter(width = 0.1, aes(col = Organ_i)) + ylim(-0.1,1) + plot_theme + theme(text = element_text(size = 24)) + 
+  geom_segment(aes(x = 1, y = p_value_line_height, xend = 2, yend = p_value_line_height)) +
+  geom_segment(aes(x = 1, y = p_value_line_height - 0.01, xend = 1, yend = p_value_line_height)) +
+  geom_segment(aes(x = 2, y = p_value_line_height - 0.01, xend = 2, yend = p_value_line_height)) +
+  annotate("text", label = paste0("p=",p_value_prim_met_diff), x = 1.5, y = p_value_line_height + 0.075, size = 5) +
+  labs(col = "Organ")
+```
+
+### Compare divergence within colorectal and liver samples and between them
+
+Now we would like to ask if there is a significant difference between divergence within liver and colorectal samples from the same patient and between them. For this we do not filter by timepoint. As we can see there are far fewer colorectal-colorectal comparisons compared to anything to the liver samples.
+
+### ANOVA for difference between intra- and inter- organ variation
+
+So now we ask if any of the categories have a significantly different mean using a simple one-way ANOVA (`aov`).
+
+```{r compare_div_colorectal_liver, warning=FALSE, fig.width=12, fig.height=6}
+# Collapse the organ comparisons
+organ_comparison = apply(cohort_dist_m, 1, function(r) {
+  
+  i = as.character(r[2])
+  j = as.character(r[3])
+  
+  c = c(i,j)
+  
+  x = paste(c[order(c)], collapse = "|")
+
+})
+
+# Make a unique comparison
+comparison_organs = data.frame(cohort_dist_m, Organ_Compare = organ_comparison)
+
+# Subset only colorectal and liver
+comparison_organs = comparison_organs[comparison_organs$Organ_Compare %in% 
+                                      c("Colorectal|Colorectal", "Liver|Liver", 
+                                        "Colorectal|Liver"),]
+comparison_organs$Organ_Compare = droplevels(comparison_organs$Organ_Compare)
+
+# Here I will do an ANOVA first for divergence
+print("An ANOVA for comparing divergence in colorectal and liver organs...")
+anova_div = aov(dist ~ Organ_Compare, comparison_organs)
+summary(anova_div)
+tukey_divergence = TukeyHSD(anova_div)
+
+# Make a look up table to plot p-values
+p_value_coord = as.data.frame(do.call(rbind, strsplit(rownames(tukey_divergence$Organ_Compare), "-")), 
+                              stringsAsFactors = F)
+
+# Add in adjusted p values
+p_value_coord$p_val_adj = tukey_divergence$Organ_Compare[,"p adj"]
+
+# Now I will do an ANOVA first for PGA difference
+print("An ANOVA for comparing difference in PGA in colorectal and liver organs...")
+summary(aov(pdiff ~ Organ_Compare, comparison_organs))
+
+# Make a ggplot
+ggplot(comparison_organs, aes(x = Organ_Compare, y = dist)) + geom_boxplot() + 
+  ylab("Divergence (fraction bins altered)") + xlab("") +
+  geom_jitter(width = 0.1, aes(col = Patient)) + ylim(-0.1,1) + 
+  geom_segment(aes(x = p_value_coord$V1[1], y = 0.85, 
+                   xend = p_value_coord$V2[1], yend = 0.85)) +
+  annotate("text", label = paste0("p=",round(p_value_coord$p_val_adj[1], digits = 2)), x = 1.5, y = 0.85 + 0.03, size = 4) +
+  geom_segment(aes(x = p_value_coord$V1[2], y = 0.9, 
+                   xend = p_value_coord$V2[2], yend = 0.9)) +
+  annotate("text", label = paste0("p=",round(p_value_coord$p_val_adj[2], digits = 2)), x = 2, y = 0.9 + 0.03, size = 4) +
+  geom_segment(aes(x = p_value_coord$V1[3], y = 0.95, 
+                   xend = p_value_coord$V2[3], yend = 0.95)) +
+  annotate("text", label = paste0("p=",round(p_value_coord$p_val_adj[3], digits = 2)), x = 2.5, y = 0.95 + 0.03, size = 4) +
+  annotate("text", label = paste0("Tukey HSD test"), x = 2, y = 1, size = 4) +
+  plot_theme + theme(text = element_text(size = 24)) + labs(col = "Patient")
+ggsave(filename = paste0(plot_dir,
+                         "Non_timepoint_specific_colorectal_liver_comparison.pdf"), 
+       width = 12, height = 6)
+
+# Repeat for PGA difference
+ggplot(comparison_organs, aes(x = Organ_Compare, y = pdiff)) + geom_violin() + 
+  ylab("PGA difference") + xlab("") +
+  geom_jitter(width = 0.1, aes(col = Patient)) + ylim(-0.1,1) + plot_theme + 
+  theme(text = element_text(size = 24)) + labs(col = "Patient")
+```
+
+### Divergence found within same timepoint and in different timepoints
+
+Now we want to know if divergence comparisons within timepoints are different from those not in the same timepoint. We now plot this simple category.
+
+To assess this we simply ask what is the effect on divergence if a comparison is made within the same timepoint or not. We again do a mixed model (`lmer`) using the patient as a random effect.
+
+```{r within_tp_across_tps, warning=FALSE, fig.width=10, fig.height=6}
+# Now we look into comparing within timepoint and across timepoint samples
+within_tps_across_tps = data.frame(cohort_dist_m, Same_tp = cohort_dist_m$TP_i==cohort_dist_m$TP_j)
+
+# Do mixed modelling
+res2b = lmer(dist ~ Same_tp + (1 | Patient), 
+             REML = TRUE, data = within_tps_across_tps)
+print("Mixed model (2) - General assessment of whether within timepoint and across timepoint is different")
+summary(res2b)
+
+# Still for plotting a pvalue
+p_value_same_tp = signif(summary(res2b)$coefficients["Same_tpTRUE","Pr(>|t|)"], digits = 2)
+p_value_line_height = max(within_tps_across_tps$dist)*1.1
+
+# Make a ggplot
+ggplot(within_tps_across_tps, aes(x = Same_tp, y = dist)) + geom_violin() + 
+  ylab("Divergence (fraction bins altered)") + xlab("Same timepoint?") +
+  geom_jitter(width = 0.1, aes(col = Patient)) + ylim(-0.1,1) + plot_theme + 
+  geom_segment(aes(x = 1, y = p_value_line_height, xend = 2, yend = p_value_line_height)) +
+  geom_segment(aes(x = 1, y = p_value_line_height - 0.01, xend = 1, yend = p_value_line_height)) +
+  geom_segment(aes(x = 2, y = p_value_line_height - 0.01, xend = 2, yend = p_value_line_height)) +
+  annotate("text", label = paste0("p=",p_value_same_tp), x = 1.5, y = p_value_line_height + 0.075, size = 5) +
+  theme(text = element_text(size = 24)) + labs(col = "Patient")
+ggsave(filename = paste0(plot_dir,
+                         "General_same_timepoint_not_same_comparison.pdf"), 
+       width = 10, height = 6)
+
+# What does a mixed linear model look like for PGA difference
+res2b = lmer(pdiff ~ Same_tp + (1 | Patient),
+             REML = TRUE, data = within_tps_across_tps)
+print("Repeat of mixed model (2) but for PGA difference")
+summary(res2b)
+
+# Still for plotting a pvalue
+p_value_same_tp = signif(summary(res2b)$coefficients["Same_tpTRUE","Pr(>|t|)"], digits = 2)
+p_value_line_height = max(within_tps_across_tps$dist)*1.1
+
+# Repeat for PGA difference
+ggplot(within_tps_across_tps, aes(x = Same_tp, y = pdiff)) + geom_violin() + 
+  ylab("PGA Difference") + xlab("Same timepoint?") +
+  geom_jitter(width = 0.1, aes(col = Patient)) + ylim(-0.1,1) + plot_theme + 
+  geom_segment(aes(x = 1, y = p_value_line_height, xend = 2, yend = p_value_line_height)) +
+  geom_segment(aes(x = 1, y = p_value_line_height - 0.01, xend = 1, yend = p_value_line_height)) +
+  geom_segment(aes(x = 2, y = p_value_line_height - 0.01, xend = 2, yend = p_value_line_height)) +
+  annotate("text", label = paste0("p=",p_value_same_tp), x = 1.5, y = p_value_line_height + 0.075, size = 5) +
+  theme(text = element_text(size = 24)) + labs(col = "Patient")
+```
+
+### Divergences between timepoint, including time normalised
+
+Now we are interested in those divergences between single intervals across the patients both as a total value and also normalised by time (divergence month^-1^).
+
+```{r time_normalised_analysis, warning=FALSE, fig.width=33, fig.height=6}
+# Calculate date difference
+patient_dists = lapply(patient_dists, function(p) {
+  
+  months_annot = lapply(1:nrow(p), function(r) {
+    
+    m1 = p[r,"Month_i"]
+    
+    m2 = p[r,"Month_j"]
+    
+    ms = sort(c(m1, m2))
+    
+    month_annot = paste0("Month_",ms[1],"_to_",ms[2])
+    
+    return(month_annot)
+    
+  })
+  
+  steps_away = lapply(1:nrow(p), function(r) {
+    
+    tp1     = p[r,"TP_i"]
+    
+    tp2     = p[r,"TP_j"]
+    
+    steps = abs(tp2 - tp1)
+    
+    return(steps)
+    
+  })
+  
+  treatment_prior_to_most_recent_tp = lapply(1:nrow(p), function(r) {
+    
+    patient = p[r,"Patient"]
+    
+    tp1     = p[r,"TP_i"]
+    
+    tp2     = p[r,"TP_j"]
+    
+    max_tp  = max(tp1, tp2)
+    
+    prev_tr = unique(clin_genomic[which(clin_genomic$Patient_ID==patient & 
+                                        clin_genomic$Time_point==max_tp),"Treatment_in_previous_interval"])
+    
+    return(prev_tr)
+    
+  })
+  
+  p$Difference_points = unlist(steps_away)
+  
+  p$Treatment_prior_recent_tp = unlist(treatment_prior_to_most_recent_tp)
+  
+  p$Month_annotation = unlist(months_annot)
+  
+  return(p)
+  
+})
+
+# Collapse the full data set
+patient_dists_mat = do.call(rbind, patient_dists)
+
+# Remove ugly row names
+rownames(patient_dists_mat) = NULL
+
+# Write it out
+write.table(patient_dists_mat, 
+            file = paste0(plot_dir,"LM_cohort_divergence_comparison.txt"), 
+            sep = ",", row.names = F, quote = F)
+
+# Remove anything that is not a comparison of one timepoint to the next
+patient_dists_next_tp = lapply(patient_dists, function(p) p[p$Difference_points==1,])
+
+# Collapse and normal
+patient_dists_next_tp = do.call(rbind, patient_dists_next_tp)
+
+# Time comparison
+patient_dists_next_tp$Timepoint_comparison = apply(patient_dists_next_tp, 1, 
+                                                   function(r) paste0(sort(r[4:5]), collapse = "_"))
+
+# Add space instead of underscore
+patient_dists_next_tp$Month_annotation = gsub("_", " ", patient_dists_next_tp$Month_annotation)
+
+# Make month annotation a factor
+patient_dists_next_tp$Month_annotation = as.factor(patient_dists_next_tp$Month_annotation)
+
+# The order first month
+level_order = order(as.numeric(unlist(lapply(strsplit(levels(patient_dists_next_tp$Month_annotation), 
+                                                      split = " "), function(i) i[2]))))
+
+# Reorder them levels
+patient_dists_next_tp$Month_annotation = factor(patient_dists_next_tp$Month_annotation, 
+                                                levels(patient_dists_next_tp$Month_annotation)[level_order])
+
+# Do ggplot2
+ggplot(patient_dists_next_tp, aes(x = Month_annotation, y = dist)) + geom_violin() + 
+  ylab("Divergence (fraction bins altered)") + xlab("Timepoint comparison") +
+  geom_jitter(width = 0.1, aes(col = Treatment_prior_recent_tp)) + ylim(-0.1,1) + 
+  facet_grid(. ~ Patient, scales = "free_x", space = "free_x") + plot_theme + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(col = "Treatment in interval")
+ggsave(filename = paste0(plot_dir,"Divergences_between_timepoints_total.pdf"), 
+       width = wide_width, height = 6)
+
+# Add one for PGA difference
+ggplot(patient_dists_next_tp, aes(x = Month_annotation, y = pdiff)) + geom_violin() + 
+  ylab("PGA difference") + xlab("Timepoint comparison") +
+  geom_jitter(width = 0.1, aes(col = Treatment_prior_recent_tp)) + ylim(-0.1,1) + 
+  facet_grid(. ~ Patient, scales = "free_x", space = "free_x") + plot_theme + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(col = "Treatment in interval")
+```
+
+### Inter-timepoint divergence categorised by treatment status
+
+Now we are interested in whether treatment affects these intervals, so we basically collapse the previous plot and plot divergence both normalised and not normalised by time in the off- and on- treatment categories.
+
+### Mixed model of non-time normalised divergence on and off treatment
+
+Here we perform a mixed model to test if absolute differences in divergence are different between treatments, using patients as a random effect.
+
+```{r mixed_model_divergence_treated, warning=FALSE, fig.width=10, fig.height=7}
+# Give informative name
+patient_dists_next_tp$Treatment_name = c("No Treatment", 
+                                         "Treated")[patient_dists_next_tp$Treatment_prior_recent_tp + 1]
+
+# Do linear modelling
+res2b = lmer(dist ~ Treatment_prior_recent_tp + (1 | Patient), 
+             REML = TRUE, data = patient_dists_next_tp)
+print("Mixed model (3) - Divergence NOT normalised by time in treated and non-treated intervals using patients as random intercepts")
+summary(res2b)
+
+# Still for plotting a pvalue
+p_value_treatment_diff = round(summary(res2b)$coefficients["Treatment_prior_recent_tpTRUE","Pr(>|t|)"], digits = 2)
+p_value_line_height = max(patient_dists_next_tp$dist)*1.1
+
+# Do ggplot2
+ggplot(patient_dists_next_tp, aes(x = Treatment_name, y = dist)) + geom_boxplot() + 
+  ylab("Divergence (fraction bins altered)") +
+  geom_jitter(width = 0.2, aes(col = Patient), size = 3) + ylim(-0.1,1) + xlab(NULL) +
+  geom_segment(aes(x = 1, y = p_value_line_height, xend = 2, yend = p_value_line_height)) +
+  geom_segment(aes(x = 1, y = p_value_line_height - 0.01, xend = 1, yend = p_value_line_height)) +
+  geom_segment(aes(x = 2, y = p_value_line_height - 0.01, xend = 2, yend = p_value_line_height)) +
+  annotate("text", label = paste0("p=",p_value_treatment_diff), x = 1.5, y = p_value_line_height + 0.075, size = 5) +
+  plot_theme + theme(text = element_text(size = 20)) + labs(col = "Patient")
+ggsave(filename = paste0(plot_dir,
+                         "Divergences_between_timepoints_total_chemo_status.png"), 
+       width = 7, height = 8.2)
+
+# Also take the opportunity to test it with a linear mixed model
+res2b = lmer(pdiff ~ Treatment_prior_recent_tp + (1 | Patient), 
+             REML = TRUE, data = patient_dists_next_tp)
+print("Repeat of mixed model (3) but for PGA difference")
+summary(res2b)
+
+# Still for plotting a pvalue
+p_value_treatment_diff = round(summary(res2b)$coefficients["Treatment_prior_recent_tpTRUE","Pr(>|t|)"], digits = 2)
+p_value_line_height = max(patient_dists_next_tp$dist)*1.1
+
+# Again let's investigate PGA difference in the same comparison
+ggplot(patient_dists_next_tp, aes(x = Treatment_name, y = pdiff)) + geom_violin() + 
+  ylab("PGA difference") + xlab("Treatment in interval") +
+  geom_jitter(width = 0.1, aes(col = Patient)) + ylim(-0.1,1) + xlab("") +
+  geom_segment(aes(x = 1, y = p_value_line_height, xend = 2, yend = p_value_line_height)) +
+  geom_segment(aes(x = 1, y = p_value_line_height - 0.01, xend = 1, yend = p_value_line_height)) +
+  geom_segment(aes(x = 2, y = p_value_line_height - 0.01, xend = 2, yend = p_value_line_height)) +
+  annotate("text", label = paste0("p=",p_value_treatment_diff), x = 1.5, y = p_value_line_height + 0.075, size = 5) +
+  plot_theme + theme(text = element_text(size = 24)) + labs(col = "Patient")
+
+```
+
+### Average change in PGA across timepoints
+
+Here we process the data to calculate percentage of the genome aberrated (PGA) and to compare from one timepoint to the next whether this goes up or down and record the difference. Here is PGA in one sample is 0.41 and in the next it is 0.43, we would report it as going up by 0.02 * 100 (2). We average this for each timepoint and report the median of the averages across the cohort.
+
+```{r pga_change_timepoints, warning=FALSE}
+######################################
+### Task: Calculate changes in PGA ###
+######################################
+
+# Run through patients
+patient_pga_change = lapply(unique(clin_genomic$Patient_ID), function(p) {
+  
+  # Patient ids
+  pat_mat = calls_mat[,which(clin_genomic$Patient_ID==p)]
+  
+  # Corresponding clinical information
+  clin_mat = clin_genomic[which(clin_genomic$Patient_ID==p),]
+  
+  # Run nested apply to get all distances
+  col_col_dists = lapply(1:ncol(pat_mat), function(i) {
+    
+    # Get column
+    col_a = pat_mat[,i]
+    
+    # Get the organ and timepoint
+    organ_i = clin_mat[i,"Organ"]
+    timep_i = clin_mat[i,"Time_point"]
+    type_i  = clin_mat[i,"Organ_description"]
+    block_i = clin_mat[i,"Sample_Name"]
+    
+    # Nest the other comparisons
+    dists = lapply(1:ncol(pat_mat), function(j) {
+      
+      # Get column
+      col_b = pat_mat[,j]
+      
+      # Get the organ and timepoint
+      organ_j = clin_mat[j,"Organ"]
+      timep_j = clin_mat[j,"Time_point"]
+      type_j  = clin_mat[j,"Organ_description"]
+      block_j = clin_mat[j,"Sample_Name"]
+      
+      # Get distance
+      d = pga_diff_dist(pre = col_a, post = col_b, abs = T, perc_not_frac = T)
+      
+      # Give NA if it is the same comparison
+      if(timep_i!=(timep_j-1)) {d = NA}
+      
+      # Take the entry of the two which has the most recent timepoint and ask if it was treated in the interval
+      #   Non-sequential comparisons will be removed by na.omit due to above statement
+      treated = clin_mat[c(i, j)[which.max(c(timep_i, timep_j))],"Treatment_in_previous_interval"]
+      
+      # Make the output a dataframe
+      output = data.frame(pdiff = d,
+                          Organ_i = organ_i,
+                          Organ_j = organ_j,
+                          TP_i = timep_i,
+                          TP_j = timep_j,
+                          Type_i = type_i,
+                          Type_j = type_j,
+                          Code_i = block_i,
+                          Code_j = block_j,
+                          Treated = treated)
+      
+      return(output)
+      
+    })
+    
+    # Get those dists
+    return(dists)
+    
+  })
+  
+  # Dist mat
+  one_side_dist_mat = do.call(rbind, lapply(col_col_dists, function(i) do.call(rbind, i)))
+  
+  # One sided dist_mat for patient
+  return(one_side_dist_mat)
+  
+})
+
+# Name elements in the list
+names(patient_pga_change) = unique(clin_genomic$Patient_ID)
+
+# Also add it as a column
+for(i in 1:length(patient_pga_change)) {
+  
+  # Add list name as a column
+  patient_pga_change[[i]]$Patient = names(patient_pga_change)[i]
+  
+}
+
+# Remove NAs
+patient_pga_change = lapply(patient_pga_change, na.omit)
+
+# Make into one massive df
+pga_change_m = do.call(rbind, patient_pga_change)
+
+# Calculate average per patient and timepoint difference
+per_patient_tp_pga_change = lapply(unique(pga_change_m$Patient), function(p) {
+  
+  # Take patient
+  pat_m =  pga_change_m[pga_change_m$Patient==p,]
+  
+  # What timepoints are there in this patient?
+  diff_tps = unique(paste0(pat_m[,"TP_i"],"_",pat_m[,"TP_j"]))
+  
+  # Run through the tps
+  per_tp = lapply(diff_tps, function(t) {
+    
+    # Calculate mean
+    mean_pga_change = mean(pat_m[paste0(pat_m[,"TP_i"],"_",pat_m[,"TP_j"])==t,"pdiff"])
+    
+    # Was this interval treated?
+    treated = unique(pat_m[paste0(pat_m[,"TP_i"],"_",pat_m[,"TP_j"])==t,"Treated"])
+    
+    # Catch for error 
+    if(length(treated)!=1) {stop("Multiple treatment in interval statements for same timepoint")}
+    
+    # Return treatment status and mean pga change
+    out = data.frame(Mean_PGA_change = mean_pga_change, 
+                     Treated = treated, Interval =t, 
+                     Patient = p)
+    
+    return(out)
+    
+  })
+  
+  do.call(rbind, per_tp)
+  
+})
+
+# Collapse into a full table
+per_patient_tp_pga_change = do.call(rbind, per_patient_tp_pga_change)
+
+# What is the median change in PGA in all time intervals
+print(paste0("Median mean increase in PGA (+ / -): ",
+             round(median(per_patient_tp_pga_change$Mean_PGA_change), digits = 1)))
+
+# Variable ylim max
+ylim_max = round(max(per_patient_tp_pga_change$Mean_PGA_change) + 10, digits = -1)
+
+# Make a histogram
+ggplot(per_patient_tp_pga_change, aes(x = Treated, y = Mean_PGA_change)) +
+  geom_hline(yintercept = median(per_patient_tp_pga_change$Mean_PGA_change)) +
+  geom_boxplot(width=0.5) + ylab("Mean PGA change in interval") + ylim(0,ylim_max) + 
+  xlab("Treated in interval") + 
+  ggtitle("Mean divergence between all sequential timepoints", subtitle = "(horizontal line displays whole cohort median)") + 
+  plot_theme + theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+ggsave(filename = paste0(plot_dir,
+                         "Mean_PGA_change_timepoints_treatment.png"), 
+       width = 9, height = 7)
+  
+```
+
+### Mean PGA across time
+
+```{r timeline_pga, warning=FALSE}
+# Make new object
+clin_genomic2 = clin_genomic
+
+# Melt to calculate means of PGAs
+melted_pga_means = ddply(melt(clin_genomic2[,c("Patient_ID", "Time_point", 
+                                               "Days", "Treatment_in_previous_interval",
+                                               "PGA")], 
+                         id.vars = c("Patient_ID", "Time_point", "Days", 
+                                     "Treatment_in_previous_interval")), 
+                         .(Patient_ID, Time_point, Days, 
+                           Treatment_in_previous_interval, variable), summarize, mean = mean(value))
+
+# Add info on whether it is going up or down
+melted_pga_means$change_in_next = unlist(lapply(1:nrow(melted_pga_means), function(r) {
+    
+    p = melted_pga_means[r,"Patient_ID"]
+    
+    t = melted_pga_means[r,"Time_point"]
+    
+    d = melted_pga_means[which(melted_pga_means$Patient_ID==p &  melted_pga_means$Time_point==(t+1)),"mean"] - melted_pga_means[r,"mean"]
+    
+    if(length(d)==0) {d = NA}
+    
+    return(d)
+    
+}))
+
+# What threshold of increase to use?
+change_threshold = 0.1
+
+# Categorise and significantly up or down
+melted_pga_means$change_in_pga[melted_pga_means$change_in_next >=  change_threshold] = "Up"
+melted_pga_means$change_in_pga[melted_pga_means$change_in_next <= -change_threshold] = "Down"
+
+# Print percentage points change
+print(paste0("Percentage points change: ",round(mean(melted_pga_means$change_in_next, na.rm = T)*100, digits = 2)))
+
+ggplot(melted_pga_means, aes(x = Days+1, y = mean*100)) + geom_point() + ylab("Mean PGA at timepoint") +
+  xlab("Days since first timepoint") +
+  geom_line(aes(group = Patient_ID)) + ylim(0,100)
+
+ggplot(melted_pga_means, aes(x = Days+1, y = mean*100)) + geom_point(size = 3) + ylab("Mean PGA at timepoint") +
+  xlab("Day of time course") + scale_x_continuous(trans='log10', breaks = c(1, 10, 100, 1000)) +
+  geom_line(aes(group = Patient_ID)) + ylim(0,100) + theme(text = element_text(size = 20), legend.position = "none")
+ggsave(filename = paste0(plot_dir,
+                         "Mean_PGA_timepoints_patients.png"), 
+       width = 7, height = 8.2)
+```
