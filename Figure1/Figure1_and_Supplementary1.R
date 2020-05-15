@@ -211,6 +211,112 @@ labs(y = "% Genome altered") +
 
 
 
+
+### calculating divergence
+file = read.xlsx("FIG_CNraw.xlsx")
+file$chr <- NULL
+file$start <- NULL
+file$stop <- NULL
+
+Ds <- file[,1:38]
+Ds <- t(Ds)
+
+
+sequence <- 1:nrow(Ds)
+sequence <- sequence[seq(1,length(sequence),2)]
+
+
+for (i in sequence) {
+    if (i==1) {
+        scores_Ds <- calculateDivergence(Ds[c(i,i+1),])
+    } else {
+        score <- calculateDivergence(Ds[c(i,i+1),])
+        scores_Ds <- rbind(scores_Ds, score)
+    }
+}
+
+#for all ca-in-ads
+Cas <- file[,39:140]
+Cas <- t(Cas)
+
+rownames(Cas) <- gsub("Utrecht_pT1s_.", "", rownames(Cas))
+
+sample_names <- rownames(Cas)
+sample_names <- gsub("Utrecht_pT1s_.", "", sample_names)
+
+Cas_names <- unique(sub("\\..*", "", sample_names))
+
+Cas <- as.data.frame(Cas)
+
+for (i in 1:length(Cas_names)) {
+  combinations = combn(grep(paste("^",Cas_names[i],sep=""), row.names(Cas)), 2)
+  for (x in 1:ncol(combinations)) {
+    if (i==1 && x==1) {
+    scores_ca_in_ads <- calculateDivergence(rbind(Cas[combinations[1,x],], Cas[combinations[2,x],]))      
+    } else {
+          score <- calculateDivergence(rbind(Cas[combinations[1,x],], Cas[combinations[2,x],]))
+    }
+    scores_ca_in_ads <- rbind(scores_ca_in_ads, score)
+  }  
+}
+
+
+#for all crcs
+CRCs <- file[,141:ncol(file)]
+CRCs <- t(CRCs)
+
+sample_names <- rownames(CRCs)
+
+CRCs_names <- unique(sub("\\..*", "", sample_names))
+
+CRCs <- as.data.frame(CRCs)
+
+for (i in 1:length(CRCs_names)) {
+  combinations = combn(grep(paste("^",CRCs_names[i],sep=""), row.names(CRCs)), 2)
+  for (x in 1:ncol(combinations)) {
+    if (i==1 && x==1) {
+    scores_CRCs <- calculateDivergence(rbind(CRCs[combinations[1,x],], CRCs[combinations[2,x],]))      
+    } else {
+          score <- calculateDivergence(rbind(CRCs[combinations[1,x],], CRCs[combinations[2,x],]))
+    }
+    scores_CRCs <- rbind(scores_CRCs, score)
+  }  
+}
+
+scores_CRCs <- as.data.frame(scores_CRCs)
+scores_ca_in_ads <- as.data.frame(scores_ca_in_ads)
+scores_Ds <- as.data.frame(scores_Ds)
+scores_Ds$type <- "Adenomas"
+scores_ca_in_ads$type <- "Ca-in-Ads"
+scores_CRCs$type <- "Carcinomas"
+
+
+all_scores <- rbind(scores_Ds, scores_ca_in_ads, scores_CRCs)
+
+all_scores <- as.data.frame(all_scores)
+
+names(all_scores)[1:6] <- c("sampleID", "loss_divergence", "gain_divergence", "anueploidy", "loss_anueploidy", "gain_anueploidy")
+
+all_scores$divergence <- as.numeric(as.character(all_scores$loss_divergence)) + as.numeric(as.character(all_scores$gain_divergence))
+
+all_scores$score <- all_scores$divergence/as.numeric(as.character(all_scores$anueploidy))
+
+
+###violin plots of divergence/anueploid
+
+my_comparisons <- list( c("Adenomas", "Ca_in_Ads"), c("Adenomas", "Carcinomas"), c("Ca_in_Ads", "Carcinomas") )
+
+#perform stats for violin plot ####
+compare_means(score ~ type, data = all_scores)
+violin.kwtest <- list(c("adenoma","car in ad"),c("adenoma","carcinoma"),c("car in ad","carcinoma"))
+
+pdf("Figure1_C.pdf")
+ggplot(all_scores, aes(type, score)) + geom_violin(aes(fill = type))+ scale_fill_manual(values=c("#ea7e5d", "#5deac5", "#5d83ea")) + geom_boxplot(width=0.1) + geom_quasirandom(alpha = 0.2, width = 0.2) + labs(y = "divergence/% genome altered") + 
+theme_cowplot(12) + theme(axis.title.x = element_blank(), axis.text.x = element_text(angle = 45, hjust = 1, size=20), axis.title = element_text(size = 20), text = element_text(size=20),legend.position="none")+  
+  stat_compare_means(comparisons = my_comparisons) # Add pairwise comparisons p-value
+dev.off()
+
+
 ### calculating divergence
 Ds <- t(Ds)
 Ds <- as.data.frame(Ds)
