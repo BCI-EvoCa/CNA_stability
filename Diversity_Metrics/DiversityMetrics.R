@@ -1,5 +1,7 @@
-# Here we define the distance measure we will use
-diff_state_dist = function(x, y, only_alt_bins = T) {
+############################################################
+# Diversity measures 1, 2, 4=5 (depending on option used) #
+############################################################
+diff_state_dist = function(x, y, only_alt_bins = T, absolute_number = F) {
   
   frac_genome_alt = length(which(x!=y)) / length(x)
   
@@ -14,12 +16,16 @@ diff_state_dist = function(x, y, only_alt_bins = T) {
     output = bins_diff / bins_ab
   
   } else {output = frac_genome_alt}
+
+  if(absolute_number) {output = length(which(x!=y))}
   
   return(output)
   
 }
 
-# Genetic distance as the literal difference in CN per bin
+###################################################
+# Diversity measures 3 (depending on option used) #
+###################################################
 genetic_distance = function(x, y, normalise_by_bin_number = T) {
   
   dist = sum(abs(x-y))
@@ -84,5 +90,89 @@ log2ratio_comparison = function(segs_col_a, segs_col_b, exp_distance = 1848.691,
   }
   
   return(d)
+  
+}
+
+#######################################
+# Diversity measure 6 helper function #
+#######################################
+armCN = function(df, pqs, method = c("median", "median"), l2r_col = 4, report_NA = F) {
+  
+  method = match.arg(method)
+  
+  chrs = unique(df$chromosome)
+  
+  per_chr = lapply(chrs, function(c) {
+    
+    chrp = df[df$chromosome==c & pqs=="p",l2r_col]
+    chrq = df[df$chromosome==c & pqs=="q",l2r_col]
+    
+    if(method == "median") {
+      
+      p = median(chrp, na.rm = T)
+      q = median(chrq, na.rm = T)
+      
+    }
+    
+    if(method == "mean") {
+      
+      p = mean(chrp, na.rm = T)
+      q = mean(chrq, na.rm = T)
+      
+    }
+    
+    out = c(p, q)
+    
+    names(out) = paste0(c,c("p","q"))
+    
+    return(out)
+    
+  })
+  
+  out = unlist(per_chr)
+  
+  if(!report_NA) {out = out[!is.na(out)]}
+  
+  return(out)
+  
+}
+
+############################################################
+# Using biomaRt to calculate number of genes per bin       #
+# - may be really slow, might be better to download refseq #
+# - only compatible with hg38 right now                    #
+############################################################
+countGenesPerBin = function(bins, genome = "hg38") {
+  
+  genome = match.arg(genome)
+  
+  require("biomaRt")
+  
+  # Set up BiomaRt
+  listMarts(host="www.ensembl.org")
+  ensembl = useMart(biomart = "ENSEMBL_MART_ENSEMBL",dataset="hsapiens_gene_ensembl")
+  filters = listFilters(ensembl)
+  
+  coords = paste0(bins$chromosome,":",bins$start,":",bins$end)
+  
+  coords = as.list(coords)
+  
+  count_entries = lapply(coords, function(b) {
+    
+    # Get overlapping genes from biomaRt
+    results=getBM(attributes = c("chromosome_name", "start_position", "end_position", "hgnc_symbol"),
+                  filters = c("chromosomal_region", "biotype"),
+                  values = list(chromosomal_region=b, biotype="protein_coding"), 
+                  mart = ensembl)
+    
+    nrow(results)
+    
+  })
+  
+  count_entries = unlist(count_entries)
+  
+  out = data.frame(bins[,1:3], gene_number = count_entries)
+  
+  return(out)
   
 }
