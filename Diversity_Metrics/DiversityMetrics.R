@@ -1,7 +1,7 @@
 ############################################################
 # Diversity measures 1, 2, 4=5 (depending on option used) #
 ############################################################
-diff_state_dist = function(x, y, only_alt_bins = T, absolute_number = F) {
+diff_state_dist = function(x, y, only_alt_bins = T, absolute_number = F, ploidy = 2) {
   
   frac_genome_alt = length(which(x!=y)) / length(x)
   
@@ -11,7 +11,7 @@ diff_state_dist = function(x, y, only_alt_bins = T, absolute_number = F) {
 
     c = cbind(x, y)
 
-    bins_ab = length(which(apply(c, 1, function(i) any(i!=2))))
+    bins_ab = length(which(apply(c, 1, function(i) any(i!=ploidy))))
 
     output = bins_diff / bins_ab
   
@@ -96,7 +96,7 @@ log2ratio_comparison = function(segs_col_a, segs_col_b, exp_distance = 1848.691,
 #######################################
 # Diversity measure 6 helper function #
 #######################################
-armCN = function(df, pqs, method = c("median", "median"), l2r_col = 4, report_NA = F) {
+armCN = function(df, pqs, method = c("median", "mean"), l2r_col = 4, report_NA = F) {
   
   method = match.arg(method)
   
@@ -174,5 +174,51 @@ countGenesPerBin = function(bins, genome = "hg38") {
   out = data.frame(bins[,1:3], gene_number = count_entries)
   
   return(out)
+  
+}
+
+####################################################
+# Using biomaRt to assign each gene to a bin       #
+# - only compatible with hg38 right now            #
+####################################################
+getGeneBinIndex = function(bins_locs, genome = "hg38", chrs = 1:22, saveFile="~/Downloads/human_protein_encoding_genes_ensembl.rds") {
+  
+  genome = match.arg(genome)
+  
+  require("biomaRt")
+  
+  if (!file.exists(saveFile)){
+    print("Querying Biomart for protein coding genes")
+    ensembl = useMart(biomart = "ENSEMBL_MART_ENSEMBL",dataset="hsapiens_gene_ensembl")
+    humanProteinCodingGenes = getBM(attributes = c("chromosome_name", "start_position", "end_position", "hgnc_symbol"),
+                                    filters = c("biotype"),
+                                    values = list(biotype="protein_coding"), 
+                                    mart = ensembl)
+    saveRDS(humanProteinCodingGenes,file=saveFile)
+  } else {
+    print("Loading genes from savefile")
+    humanProteinCodingGenes = readRDS(saveFile)
+  }
+  
+  # Subset the autosomes
+  hPCG_autosomes = humanProteinCodingGenes[humanProteinCodingGenes$chromosome_name %in% chrs,]
+  hPCG_autosomes = hPCG_autosomes[order(hPCG_autosomes$chromosome_name, hPCG_autosomes$start_position),]
+  rownames(hPCG_autosomes) = NULL
+  hPCG_autosomes$mid_point = as.numeric(round(((hPCG_autosomes$end_position - hPCG_autosomes$start_position)/2) + hPCG_autosomes$start_position))
+  
+  # Run through as a list
+  gene_bin_indexes = lapply(1:nrow(hPCG_autosomes), function(i) {
+    
+    g = hPCG_autosomes[i,]
+    
+    chr = g[,"chromosome_name"]
+    mid = g[,"mid_point"]
+    
+    which(bins_locs$chr==chr & bins_locs$start<=mid & bins_locs$end>=mid)
+    
+  })
+  
+  # Produce the bin indexes
+  return(unlist(gene_bin_indexes))
   
 }
