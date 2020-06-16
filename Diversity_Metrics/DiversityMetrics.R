@@ -36,7 +36,9 @@ genetic_distance = function(x, y, normalise_by_bin_number = T) {
   
 }
 
-# A sum of squared difference comparison of segmented log2ratio per bin, normalising for purity differences 
+##############################################
+# L2RSS - a comparison of log2ratio profiles #
+##############################################
 log2ratio_comparison = function(segs_col_a, segs_col_b, exp_distance = 1848.691, normalise_to_exp = T, min_purity = 0.2) {
   
   # Calculate contineous copy number
@@ -221,4 +223,54 @@ getGeneBinIndex = function(bins_locs, genome = "hg38", chrs = 1:22, saveFile="~/
   # Produce the bin indexes
   return(unlist(gene_bin_indexes))
   
+}
+
+#######################################
+# Breakpoint functions from Salpie :) #
+#######################################
+convertToBreakpoints = function(cnTable){
+  y = cnTable
+  y[y > 0] <- 0
+  
+  for (column in 1:ncol(cnTable)) {
+    breakpoints = (which(!!diff(as.numeric(cnTable[,column])))+1) #get indexes
+    y[c(breakpoints),column] <- 1
+  }
+  return(y)
+}
+
+calculateRelatednessCn = function(cnTable, pairs, maxgap){
+  
+  pair_scores <- apply(pairs, 1, function(x){getScoreCN(cnTable, populationBreakpoints, maxgap, as.character(x))})
+  
+  results <- cbind.data.frame(pairs, pair_scores)
+  
+  return(results)
+}
+
+getScoreCN = function(cnTable, maxgap, pairs){
+  
+  sample1 <- cnTable[,c(colnames(cnTable) == "Chr" | colnames(cnTable) == "Start" | colnames(cnTable) == "End" | colnames(cnTable) == pairs[1])]
+  sample2 <- cnTable[,c(colnames(cnTable) == "Chr" | colnames(cnTable) == "Start" | colnames(cnTable) == "End" | colnames(cnTable) == pairs[2])]
+  row_sample1 = apply(sample1, 1, function(row) all(row !=0 ))
+  sample1 <- 	sample1[row_sample1,]
+  row_sample2 = apply(sample2, 1, function(row) all(row !=0 ))
+  sample2 <- 	sample2[row_sample2,]
+  
+  if (empty(sample1) | empty(sample2)){
+    score = 0
+  } else {
+    #tryCatch creates an empty GRanges object if the list is empty - would error out otherwise
+    sample1_granges <- makeGRangesFromDataFrame(sample1[,c("Chr", "Start", "End")], start.field = "Start", end.field = "End")
+    sample2_granges <- makeGRangesFromDataFrame(sample2[,c("Chr", "Start", "End")], start.field = "Start", end.field = "End")
+    
+    hits_start <- suppressWarnings(queryHits(findOverlaps(sample1_granges, sample2_granges, type = "start", maxgap = maxgap)))
+    hits_end <- suppressWarnings(queryHits(findOverlaps(sample1_granges, sample2_granges, type = "end", maxgap = maxgap)))
+    
+    nconcordant_adj <- 2*(length(hits_start)+length(hits_end))
+    total_breakpoints <- sum(2*length(sample1_granges)+2*length(sample2_granges))
+    
+    score = (total_breakpoints-nconcordant_adj)/total_breakpoints
+  }
+  return(score)
 }
