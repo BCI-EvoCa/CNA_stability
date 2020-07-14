@@ -176,3 +176,28 @@ countGenesPerBin = function(bins, genome = "hg38") {
   return(out)
   
 }
+                                 
+                                 
+                                 
+                                 
+ ### to get segments ### to get segments of copy number 1/2/3 - change according to what gains/loss/diploid are for you
+diploid = 2
+gain = 3
+loss = 1
+                                 
+                                 
+getDiploidRuns <- function(x) {
+    return(rle(x)$lengths[rle(x)$values==diploid])
+}
+
+#function to get the length of runs of gain
+getGainRuns <- function(x) {
+    return(rle(x)$lengths[rle(x)$values==gain])
+}
+
+getLossRuns <- function(x) {
+    return(rle(x)$lengths[rle(x)$values==loss])
+}
+
+
+                                 
