@@ -199,5 +199,60 @@ getLossRuns <- function(x) {
     return(rle(x)$lengths[rle(x)$values==loss])
 }
 
+##### breakpoints function
+
+
+#where you see a change in copy number state, mark a 1 on the row. non changes are 0s
+convertToBreakpoints <- function(cnTable){
+	y = cnTable
+	y[y > 0] <- 0
+
+	for (column in 1:ncol(cnTable)) {
+		breakpoints = (which(!!diff(as.numeric(cnTable[,column])))+1) #get indexes
+		y[c(breakpoints),column] <- 1
+	}
+return(y)
+}
+
+calculateRelatednessCn <- function(cnTable, pairs, maxgap){
+
+  # populationBreakpoints <- collatePopulationBreakpoints(cnTable)
+  pair_scores <- apply(pairs, 1, function(x){getScoreCN(cnTable, populationBreakpoints, maxgap, as.character(x))})
+
+  results <- as.data.frame(t(pair_scores))
+
+  return(results)
+}
+
+getScoreCN <- function(cnTable, populationBreakpoints, maxgap, pairs){
+
+  sample1 <- cnTable[,c(colnames(cnTable) == "Chr" | colnames(cnTable) == "Start" | colnames(cnTable) == "End" | colnames(cnTable) == pairs[1])]
+  sample2 <- cnTable[,c(colnames(cnTable) == "Chr" | colnames(cnTable) == "Start" | colnames(cnTable) == "End" | colnames(cnTable) == pairs[2])]
+	row_sample1 = apply(sample1, 1, function(row) all(row !=0 ))
+sample1 <- 	sample1[row_sample1,]
+	row_sample2 = apply(sample2, 1, function(row) all(row !=0 ))
+sample2 <- 	sample2[row_sample2,]
+
+if (empty(sample1) | empty(sample2)){
+  score = c(paste(pairs[1],pairs[2], sep="_"),0,0,0)
+  } else {
+  #tryCatch creates an empty GRanges object if the list is empty - would error out otherwise
+  sample1_granges <- makeGRangesFromDataFrame(sample1[,c("Chr", "Start", "End")], start.field = "Start", end.field = "End")
+  sample2_granges <- makeGRangesFromDataFrame(sample2[,c("Chr", "Start", "End")], start.field = "Start", end.field = "End")
+
+  hits_start <- suppressWarnings(queryHits(findOverlaps(sample1_granges, sample2_granges, type = "start", maxgap = maxgap)))
+  hits_end <- suppressWarnings(queryHits(findOverlaps(sample1_granges, sample2_granges, type = "end", maxgap = maxgap)))
+
+    nconcordant_adj <- 2*(length(hits_start)+length(hits_end))
+  total_breakpoints <- sum(2*length(sample1_granges)+2*length(sample2_granges))
+  discordant = (total_breakpoints-nconcordant_adj)
+
+  breakpoint_score = discordant/total_breakpoints
+  score <- c(paste(pairs[1],pairs[2], sep="_"), discordant, total_breakpoints, breakpoint_score)
+
+}
+  return(score)
+}
+
 
                                  
