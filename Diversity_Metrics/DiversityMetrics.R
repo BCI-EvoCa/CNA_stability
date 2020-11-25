@@ -1,6 +1,6 @@
-############################################################
+###########################################################
 # Diversity measures 1, 2, 4=5 (depending on option used) #
-############################################################
+###########################################################
 diff_state_dist = function(x, y, only_alt_bins = T, absolute_number = F, ploidy = 2) {
   
   frac_genome_alt = length(which(x!=y)) / length(x)
@@ -21,6 +21,40 @@ diff_state_dist = function(x, y, only_alt_bins = T, absolute_number = F, ploidy 
   
   return(output)
   
+}
+
+#########################################################
+# Salpie's divergence measure with ploidy normalisation #
+#########################################################
+calculateDivergence <- function(to_compare, ploidy = 2) {
+    fab <- as.data.frame(table(colSums(to_compare<ploidy)))
+    if (length(fab$Freq[fab$Var1==1] > 0)) {
+        if (fab$Freq[fab$Var1==1] > 0) {
+            score_loss <- fab$Freq[fab$Var1==1]
+        } else {
+            score_loss <- 0
+            }       
+        } else {
+            score_loss <- 0     
+        }
+     fab <- as.data.frame(table(colSums(to_compare>ploidy)))
+   if (length(fab$Freq[fab$Var1==1] > 0)) {
+        if (fab$Freq[fab$Var1==1] > 0) {
+            score_gain <- fab$Freq[fab$Var1==1]
+        } else {
+            score_gain <- 0
+            }       
+        } else {
+            score_gain <- 0     
+        }
+        anueploidy <- length(to_compare[to_compare<ploidy|to_compare>ploidy])
+        loss_anueploidy <- length(to_compare[to_compare<ploidy])
+        gain_anueploidy <- length(to_compare[to_compare>ploidy])
+    scores <- c(paste(rownames(head(to_compare))[1],rownames(head(to_compare))[2], sep="_"), score_loss, score_gain, anueploidy, loss_anueploidy, gain_anueploidy)
+
+    divergence_score = (score_loss + score_gain) / anueploidy
+    
+    return(divergence_score)
 }
 
 ###################################################
@@ -273,4 +307,34 @@ getScoreCN = function(cnTable, maxgap, pairs){
     score = (total_breakpoints-nconcordant_adj)/total_breakpoints
   }
   return(score)
+}
+
+
+###################################
+# Average mean length differences #
+###################################
+get_diffLengths = function(cnTable, pairs, pp = 2, max_size = FALSE) {
+  
+    # Make a dataframe
+    a = cnTable[,c(colnames(cnTable) == "Chr" | colnames(cnTable) == pairs[1])]
+    b = cnTable[,c(colnames(cnTable) == "Chr" | colnames(cnTable) == pairs[2])]
+    a[,2] = as.numeric(as.character(a[,2]))
+    b[,2] = as.numeric(as.character(b[,2]))
+    len = NULL
+    for (chrs in 1:length(unique(a$Chr))) {
+      sub_a = subset(a, a$Chr == unique(a$Chr)[chrs])
+      sub_b = subset(b, b$Chr == unique(a$Chr)[chrs])
+      pasted = paste0(sub_a[,2], sub_b[,2])
+      diff_bins = unlist(lapply(strsplit(rle(pasted)$values, split = ""), function(i) all(!duplicated(i))))
+      lengths = rle(pasted)$lengths[diff_bins]
+      len = c(len,lengths)
+    }
+    
+    # Catch times when there is no difference and record it as zero
+    if(length(len)==0) {len = 0}
+
+    if(max_size) {output = max(len)} else {output = mean(len)}
+    
+    return(output)
+    
 }
